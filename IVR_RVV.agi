@@ -1,0 +1,355 @@
+#!/usr/bin/perl
+
+# IVR RVV script, used to enable RVV interoperability
+
+# don't cache variables
+$|=1;
+
+# parse variables
+while(<STDIN>) {
+	chomp;
+	last unless length($_);
+	if (/^agi_(\w+)\:\s+(.*)$/) {
+		$AGI{$1} = $2;
+	}
+	if (/^agi_callerid\:\s+(.*)$/) {$caller_id = $1;}
+	if (/^agi_calleridname\:\s+(.*)$/) {$caller_idname = $1;}
+}
+
+# load Asterisk modules
+use Asterisk::AGI;
+my $agi = new Asterisk::AGI;
+
+# set used variables
+my $clid = $agi->get_variable('CALLERID');
+my $clidname = $agi->get_variable('CALLERIDNAME');
+my $allorpp = '0';
+my $postalcode = '0000';
+my $housenumber = '0';
+my @choicesmade = qw();
+
+&setEntry;
+#&fetchNumber;
+$agi->verbose($clid);
+$agi->stream_file('RVV_intro');
+$agi->stream_file('RVV_intro_extra');
+&checkIfAllowed;
+
+# check if allowed to decide for phonenumber
+sub checkIfAllowed {
+	$agi->stream_file('RVV_bevoegd');
+	$agi->stream_file('beep');
+	$digit = chr($agi->wait_for_digit('10000'));
+	if($digit =~ /\d/){
+		$agi->verbose($digit);
+		if($digit == '1'){
+			$agi->verbose("ja");
+			&mainMenu;
+		}
+		elsif($digit == '2'){
+			$agi->verbose("nee");
+			&isNotAllowed;
+		}
+		else{
+			$agi->verbose("ongeldige invoer");
+			&incorrectChoice;
+		}
+	}
+}
+
+# handle not allowed
+sub isNotAllowed {
+	$agi->stream_file('RVV_bye_onbevoegd');
+	&cutLine;
+}
+
+# main menu
+sub mainMenu {
+	$agi->stream_file('RVV_mainmenu');
+	$agi->stream_file('beep');
+	$digit = chr($agi->wait_for_digit('10000'));
+	if($digit =~ /\d/){
+		$agi->verbose($digit);
+		if($digit == '1'){
+			#&genCheck;
+			#&checkResult;
+			@choicesmade = qw(0 0 0 0 0 0 0 0 0 0);
+			$agi->stream_file('RVV_controle');
+			&getNumber;
+			$agi->stream_file('RVV_bye_alleenPP');
+			&cutLine;
+		}
+		elsif($digit == '2'){
+			$allorpp = '2';
+			&getProductChoices;
+			$agi->stream_file('RVV_controle');
+			&getNumber;
+			$agi->stream_file('RVV_bye_products');
+			$agi->stream_file('RVV_bye_extra');
+			&cutLine;
+		}
+		elsif($digit == '3'){
+			$allorpp = '1';
+			#&genCheck;
+			#&checkResult;
+			@choicesmade = qw(1 1 1 1 1 1 1 1 1 1);
+			$agi->stream_file('RVV_controle');
+			&getNumber;
+			$agi->stream_file('RVV_bye_alles');
+			$agi->stream_file('RVV_bye_extra');
+			&cutLine;
+		}
+	}
+}
+
+# check phonenumber
+sub checkResult {	
+	$agi->stream_file('RVV_afgemeldmet');
+	@CALLERID_DIGITS = split(//, $clid);
+	
+	foreach (@CALLERID_DIGITS)
+	{
+		$agi->verbose($_);
+		$agi->stream_file('RVV_' . $_);
+	}
+	
+	$agi->stream_file('RVV_correct');
+	$agi->stream_file('beep');
+	$digit = chr($agi->wait_for_digit('10000'));
+	if($digit =~ /\d/){
+		if($digit == '1'){
+			&getPostalCode;
+		}
+		elsif($digit == '2'){
+			&getNumber;
+		}
+		else{
+			&incorrectChoice;
+		}
+	}
+}
+
+# set entry to IVR
+sub setEntry {
+	use DBI;
+	$agi->verbose("Connecting to DB");
+	my $dsn = 'DBI:mysql:asterisk:localhost:3306';
+	my $db_user_name = 'webuser';
+	my $db_password = 'secret';
+	my ($id, $password);
+	my $dbh = DBI->connect($dsn, $db_user_name, $db_password) or die "Can't connect to the DB: $DBI::errstr\n";
+	if ($DBI::err) {
+		$agi->verbose("Connect to DB FAILED");
+		$agi->verbose($DBI::errstr);
+		
+		&errorRaised;
+		exit;
+	}
+	$agi->verbose("executing query");
+	$dbh->do("insert into vicidial_INTORVV (incoming) values('1');");
+	if ($DBI::err) {
+		$agi->verbose("Failed to execute proc");
+		$agi->verbose($DBI::errstr);
+	
+		&errorRaised;
+		exit;
+	}
+	$dbh->disconnect;
+}
+
+# write phonenumber to database
+sub saveNumber {
+	use DBI;
+	$agi->verbose("Connecting to DB");
+	my $dsn = 'DBI:mysql:asterisk:localhost:3306';
+	my $db_user_name = 'webuser';
+	my $db_password = 'noshitboi';
+	my ($id, $password);
+	my $dbh = DBI->connect($dsn, $db_user_name, $db_password) or die "Can't connect to the DB: $DBI::errstr\n";
+	if ($DBI::err) {
+		$agi->verbose("Connect to DB FAILED");
+		$agi->verbose($DBI::errstr);
+		
+		&errorRaised;
+		exit;
+	}
+
+	$agi->verbose("executing query");
+	$dbh->do("insert into vicidial_RVV (phone_number,allorpp,postalcode,housenumber,auto,boeken,energie,financien,charit,esoterie,kranten,loterijen,telecom,postorder) values('$clid','$allorpp','$postalcode','$housenumber',@choicesmade[0],@choicesmade[1],@choicesmade[2],@choicesmade[3],@choicesmade[4],@choicesmade[5],@choicesmade[6],@choicesmade[7],@choicesmade[8],@choicesmade[9]);");
+	if ($DBI::err) {
+		$agi->verbose("Failed to execute proc");
+		$agi->verbose($DBI::errstr);
+	
+		&errorRaised;
+		exit;
+	}
+	$dbh->disconnect;
+}
+
+# get phonenumber from DTMF
+sub getNumber {
+	$loopcounter = 0;
+	$fullnumber = '';
+	$agi->stream_file('RVV_geeftelnummer');
+	$agi->stream_file('beep');
+	while($loopcounter < 10){
+		$digit = $agi->wait_for_digit('2000');
+		if($digit =~ /\d/){
+			$fullnumber = $fullnumber . chr($digit);
+			$loopcounter++;
+		}
+	}
+	
+	$clid = $fullnumber;
+	
+	&checkResult;
+}
+
+# controle
+sub streamControleInfo {
+	$agi->stream_file('RVV_controle');
+	&getPostalCode;
+}
+
+# get postalcode from DTMF
+sub getPostalCode {
+	$loopcounter = 0;
+	$pc = '';
+	$agi->stream_file('RVV_geefpostcode');
+	$agi->stream_file('beep');
+	while($loopcounter < 4){
+		$digit = $agi->wait_for_digit('2000');
+		if($digit =~ /\d/){
+			$pc = $pc . chr($digit);
+			$loopcounter++;		
+		}
+	}
+	
+	$postalcode = $pc;
+	
+	&getHouseNumber;
+}
+
+# get housenumber from DTMF
+sub getHouseNumber {
+	$hn = '';
+	$agi->stream_file('RVV_geefhuisnummer');
+	$agi->stream_file('beep');
+	while($loopcounter < 10){
+		$digit = $agi->wait_for_digit('1000');
+		if($digit =~ /\d/){
+			$hn = $hn . chr($digit);
+			$loopcounter++;
+		}
+		elsif($digit !~ /\d/){
+			$housenumber = $hn;
+			&checkPCHN;
+			exit;
+		}
+		else{
+			&errorRaised;
+			exit;
+		}
+	}
+
+	$housenumber = $hn;
+
+	&checkPCHN;
+}
+
+# get productchoices
+sub getProductChoices{
+	$agi->stream_file('RVV_producten');	
+	@choices = qw(auto boeken energie financien charit esoterie kranten loterijen telecom postorder);
+	foreach $product(@choices){
+		$agi->stream_file('RVV_product_' . "$product");
+		$agi->stream_file('beep');
+		$digit = chr($agi->wait_for_digit('10000'));
+		if($digit =~ /\d/){
+			if($digit == '1'){
+				push(@choicesmade,'1');
+				$agi->verbose('1');
+			}
+			elsif($digit == '2'){
+				push(@choicesmade,'0');
+				$agi->verbose('0');
+			}
+			else{
+				$agi->stream_file('RVV_incorrectDTMF');
+				&getProductChoices;
+				exit;
+			}
+		}
+	}
+}
+
+# check if postalcode and housenumber are valid
+sub checkPCHN{
+	if(($postalcode == '0000') || ($postalcode == 0) || ($housenumber == '0') || ($housenumber == 0)){
+		$agi->stream_file('RVV_incorrectecontroledata');
+		&getPostalCode;
+	}
+	else{
+		&saveNumber;
+	}
+}
+
+# general pre-phonenumber check
+sub genCheck {
+	$agi->stream_file('RVV_generalcheck');
+}
+
+# general cut line
+sub cutLine {
+	$agi->stream_file('RVV_cutline');
+	exit;
+}
+
+# fetch phonenumber from database
+sub fetchNumber {
+	use DBI;
+	$agi->verbose("Connecting to DB");
+	my $dsn = 'DBI:mysql:asterisk:localhost:3306';
+	my $db_user_name = 'webuser';
+	my $db_password = 'noshitboi';
+	my ($id, $password);
+	my $dbh = DBI->connect($dsn, $db_user_name, $db_password) or die "Can't connect to the DB: $DBI::errstr\n";
+	if ($DBI::err) {
+		$agi->verbose("Connect to DB FAILED");
+		$agi->verbose($DBI::errstr);
+		
+		&errorRaised;
+		exit;
+	}
+	$agi->verbose("executing query");
+	$query = "select extension from call_log where caller_code = '$clidname';";
+	my $sth = $dbh->prepare($query) or die "Couldn't prepare statetement: " . $dbh->errstr;
+	if ($DBI::err) {
+		$agi->verbose("Failed to prepare proc");
+		$agi->verbose($DBI::errstr);
+	
+		&errorRaised;
+		exit;
+	}
+	$sth->execute();
+	$sth->bind_columns(undef,\$ext);
+	while($sth->fetch())
+	{
+		$clid = $ext;
+	}
+	$dbh->disconnect;
+}
+
+# handle error
+sub errorRaised {
+	$agi->stream_file('RVV_error');
+	&cutLine;
+	exit;
+}
+
+# handle incorrect input
+sub incorrectChoice {
+	$agi->stream_file('RVV_bye_onjuisteinvoer');
+	&cutLine;
+	exit;
+}
